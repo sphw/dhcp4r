@@ -2,9 +2,10 @@
 extern crate dhcp4r;
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, UdpSocket};
+use std::net::Ipv4Addr;
 use std::ops::Add;
 use std::time::{Duration, Instant};
+use tokio::net::UdpSocket;
 
 use dhcp4r::{options, packet, server};
 
@@ -24,8 +25,9 @@ const LEASE_NUM: u32 = 100;
 // Derived constants
 const IP_START_NUM: u32 = bytes_u32!(IP_START);
 
-fn main() {
-    let socket = UdpSocket::bind("0.0.0.0:67").unwrap();
+#[tokio::main]
+async fn main() {
+    let socket = UdpSocket::bind("0.0.0.0:67").await.unwrap();
     socket.set_broadcast(true).unwrap();
 
     let ms = MyServer {
@@ -34,7 +36,7 @@ fn main() {
         lease_duration: Duration::new(LEASE_DURATION_SECS as u64, 0),
     };
 
-    server::Server::serve(socket, SERVER_IP, ms);
+    server::Server::serve(socket, SERVER_IP, ms).await;
 }
 
 struct MyServer {
@@ -43,8 +45,9 @@ struct MyServer {
     lease_duration: Duration,
 }
 
+#[async_trait::async_trait]
 impl server::Handler for MyServer {
-    fn handle_request(&mut self, server: &server::Server, in_packet: packet::Packet) {
+    async fn handle_request(&mut self, server: &server::Server, in_packet: packet::Packet) {
         match in_packet.message_type() {
             Ok(options::MessageType::Discover) => {
                 // Prefer client's choice if available

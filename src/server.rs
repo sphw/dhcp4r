@@ -1,5 +1,5 @@
-use std::cell::Cell;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use tokio::net::UdpSocket;
 
 use crate::options;
 use crate::options::{DhcpOption, MessageType};
@@ -8,14 +8,14 @@ use crate::packet::*;
 ///! This is a convenience module that simplifies the writing of a DHCP server service.
 
 pub struct Server {
-    out_buf: Cell<[u8; 1500]>,
     socket: UdpSocket,
     src: SocketAddr,
     server_ip: Ipv4Addr,
 }
 
+#[async_trait::async_trait]
 pub trait Handler {
-    fn handle_request(&mut self, server: &Server, in_packet: Packet);
+    async fn handle_request(&mut self, server: &Server, in_packet: Packet);
 }
 
 /// Orders and filters options based on PARAMETER_REQUEST_LIST received from client.
@@ -49,25 +49,24 @@ pub fn filter_options_by_req(opts: &mut Vec<DhcpOption>, req_params: &[u8]) {
 }
 
 impl Server {
-    pub fn serve<H: Handler>(
+    pub async fn serve<H: Handler>(
         udp_soc: UdpSocket,
         server_ip: Ipv4Addr,
         mut handler: H,
     ) -> std::io::Error {
         let mut in_buf: [u8; 1500] = [0; 1500];
         let mut s = Server {
-            out_buf: Cell::new([0; 1500]),
             socket: udp_soc,
             server_ip,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         };
         loop {
-            match s.socket.recv_from(&mut in_buf) {
+            match s.socket.recv_from(&mut in_buf).await {
                 Err(e) => return e,
                 Ok((l, src)) => {
                     if let Ok(p) = Packet::from(&in_buf[..l]) {
                         s.src = src;
-                        handler.handle_request(&s, p);
+                        handler.handle_request(&s, p).await;
                     }
                 }
             }
@@ -77,7 +76,7 @@ impl Server {
     /// Constructs and sends a reply packet back to the client.
     /// additional_options should not include DHCP_MESSAGE_TYPE nor SERVER_IDENTIFIER as these
     /// are added automatically.
-    pub fn reply(
+    pub async fn reply(
         &self,
         msg_type: MessageType,
         additional_options: Vec<DhcpOption>,
@@ -123,6 +122,7 @@ impl Server {
             chaddr: req_packet.chaddr,
             options: opts,
         })
+        .await
     }
 
     /// Checks the packet see if it was intended for this DHCP server (as opposed to some other also on the network).
@@ -134,11 +134,12 @@ impl Server {
     }
 
     /// Encodes and sends a DHCP packet back to the client.
-    pub fn send(&self, p: Packet) -> std::io::Result<usize> {
+    pub async fn send(&self, p: Packet) -> std::io::Result<usize> {
         let mut addr = self.src;
         if p.broadcast || addr.ip() == IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)) {
             addr.set_ip(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
         }
-        self.socket.send_to(p.encode(&mut self.out_buf.get()), addr)
+        let mut out_buf = [0; 1500];
+        self.socket.send_to(p.encode(&mut out_buf), addr).await
     }
 }
